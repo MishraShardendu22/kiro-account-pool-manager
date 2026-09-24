@@ -1,4 +1,4 @@
-# 🚀 Kiro Account Pool Manager (`kiro-pool`)
+# Kiro Account Pool Manager (`kiro-pool`)
 
 <div align="center">
 
@@ -18,7 +18,7 @@
 
 ---
 
-## ⚡ Key Features
+## Key Features
 
 * **Unlimited Accounts ($N$):** Connect 2, 5, 10, or 50+ Google accounts with independent session tokens.
 * **Ultra-Lightweight (~50 KB / account):** Uses symlink templating to share heavy engine runtimes (`node`, `bun`, `tui.js`, `run/`). 50 accounts use ~2.5 MB instead of 50 GB.
@@ -29,7 +29,7 @@
 
 ---
 
-## 🏗️ How It Works
+## How It Works
 
 Kiro CLI stores authentication tokens in an unencrypted SQLite table at `$XDG_DATA_HOME/kiro-cli/data.sqlite3`.
 
@@ -53,7 +53,7 @@ flowchart TD
 
 ---
 
-## 🚀 Quickstart
+## Quickstart
 
 ### 1. Installation
 
@@ -103,7 +103,7 @@ acc3            experimental@gmail.com           Cooldown (45m)  8
 
 ---
 
-## 💡 Usage
+## Usage
 
 ### A. Non-Interactive Task Prompts (Automatic Rotation)
 
@@ -146,7 +146,7 @@ kiro chat --no-interactive "Review PR #42"
 
 ---
 
-## 📖 Command Reference
+## Command Reference
 
 | Command | Description |
 | :--- | :--- |
@@ -161,7 +161,7 @@ kiro chat --no-interactive "Review PR #42"
 
 ---
 
-## 🧪 Running Tests
+## Running Tests
 
 The test suite runs using Python's native `unittest` framework (zero third-party dependencies):
 
@@ -171,7 +171,7 @@ python3 -m unittest discover -s tests -v
 
 ---
 
-## ❓ Frequently Asked Questions
+## Frequently Asked Questions
 
 #### Does this modify my default `kiro-cli`?
 No. Standard `kiro-cli` continues to use your primary default account and configuration. `kiro-pool` operates strictly in isolated profile directories (`~/.local/share/kiro-profiles/`).
@@ -184,12 +184,12 @@ Kiro CLI automatically refreshes expired tokens in the background using each pro
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are warmly welcomed! Please read our [Contributing Guide](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ---
 
-## 📄 License
+## License
 
 MIT License. See [LICENSE](LICENSE) for details.

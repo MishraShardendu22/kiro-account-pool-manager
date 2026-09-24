@@ -12,12 +12,12 @@ mkdir -p "$TARGET_DIR"
 cp "$BIN_SRC" "$TARGET_BIN"
 chmod +x "$TARGET_BIN"
 
-echo "✓ Successfully installed kiro-pool to: $TARGET_BIN"
+echo "Successfully installed kiro-pool to: $TARGET_BIN"
 
 # Check if ~/.local/bin is in PATH
 if [[ ":$PATH:" != *":$TARGET_DIR:"* ]]; then
   echo ""
-  echo "⚠️ Notice: $TARGET_DIR is not in your current PATH."
+  echo "Notice: $TARGET_DIR is not in your current PATH."
   echo "Add it by adding this line to your ~/.bashrc or ~/.zshrc:"
   echo '  export PATH="$HOME/.local/bin:$PATH"'
 fi
