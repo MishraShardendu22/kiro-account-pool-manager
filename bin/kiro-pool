@@ -8,14 +8,15 @@ import shutil
 import argparse
 import subprocess
 
-BASE_DIR = os.path.expanduser("~/.local/share/kiro-profiles")
-KIRO_HOME_BASE = os.path.expanduser("~/.kiro-profiles")
+BASE_DIR = os.getenv("KIRO_POOL_BASE_DIR") or os.path.expanduser("~/.local/share/kiro-profiles")
+KIRO_HOME_BASE = os.getenv("KIRO_POOL_HOME_BASE") or os.path.expanduser("~/.kiro-profiles")
 STATE_FILE = os.path.join(BASE_DIR, "pool_state.json")
 LOCK_FILE = os.path.join(BASE_DIR, ".pool.lock")
-SYSTEM_DATA_DIR = os.path.expanduser("~/.local/share/kiro-cli")
-KIRO_BIN = shutil.which("kiro-cli") or os.path.expanduser("~/.local/bin/kiro-cli")
+SYSTEM_DATA_DIR = os.getenv("KIRO_POOL_SYSTEM_DATA_DIR") or os.path.expanduser("~/.local/share/kiro-cli")
+KIRO_BIN = os.getenv("KIRO_BIN") or shutil.which("kiro-cli") or os.path.expanduser("~/.local/bin/kiro-cli")
+VERSION = "1.0.0"
 
-COOLDOWN_SECONDS = 3600  # 1 hour cooldown when throttled
+COOLDOWN_SECONDS = int(os.getenv("KIRO_POOL_COOLDOWN_SECONDS") or "3600")  # 1 hour cooldown when throttled
 
 def acquire_lock():
     os.makedirs(BASE_DIR, exist_ok=True)
@@ -287,8 +288,12 @@ def main():
             release_lock(lock)
         return
 
+    if sub in ["--version", "-v", "version"]:
+        print(f"kiro-pool {VERSION}")
+        return
+
     if sub in ["help", "--help", "-h"]:
-        print("""Kiro Multi-Account Pool Manager
+        print(f"""Kiro Multi-Account Pool Manager v{VERSION}
 
 Usage:
   kiro-pool add <name>                  Enroll a new Google account into the pool

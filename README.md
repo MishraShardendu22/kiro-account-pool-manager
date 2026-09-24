@@ -1,8 +1,20 @@
-# Kiro Account Pool Manager (`kiro-pool`)
+# 🚀 Kiro Account Pool Manager (`kiro-pool`)
 
-> **Multi-account pooling, quota multiplexing, and automatic rate-limit failover for Kiro CLI.**
+<div align="center">
 
-Scale beyond single-account limits by pooling an arbitrary number ($N$) of Google accounts together under one Linux user. Rotate prompts round-robin across accounts to multiply your available AI subscription quotas, and automatically fail over to healthy accounts when rate limits hit.
+### Multi-Account Pooling, Quota Multiplexing & Auto-Failover for Kiro CLI
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python Version](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg)](https://python.org/)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20POSIX-lightgrey.svg)](https://www.kernel.org/)
+[![CI](https://github.com/MishraShardendu22/kiro-account-pool-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/MishraShardendu22/kiro-account-pool-manager/actions)
+[![GitHub Stars](https://img.shields.io/github/stars/MishraShardendu22/kiro-account-pool-manager?style=social)](https://github.com/MishraShardendu22/kiro-account-pool-manager)
+
+<p align="center">
+  <b>Scale beyond single-account limits by pooling an arbitrary number ($N$) of Google accounts together under one Linux user. Rotate prompts round-robin across accounts to multiply your available AI quotas, and automatically fail over to healthy accounts when rate limits hit.</b>
+</p>
+
+</div>
 
 ---
 
@@ -23,25 +35,18 @@ Kiro CLI stores authentication tokens in an unencrypted SQLite table at `$XDG_DA
 
 `kiro-pool` wraps your installed `kiro-cli` binary, dynamically injecting isolated environment variables (`XDG_DATA_HOME`, `KIRO_HOME`, `XDG_RUNTIME_DIR`) per command:
 
-```
-[ You run: kiro-pool chat --no-interactive "Scaffold app" ]
-                           │
-                           ▼
-                  kiro-pool Orchestrator
-             ├── 1. Reads state & picks next healthy account
-             ├── 2. Benches throttled accounts (cooldown window)
-             ├── 3. Injects isolated XDG & KIRO environment vars
-                           │
-                           ▼
-           Calls official `kiro-cli` binary with that profile
-                           │
-             ┌─────────────┴─────────────┐
-             ▼                           ▼
-     [Success: Returns]         [Throttled (429)]
-                                         │
-                                         ▼
-                                Marks account in cooldown
-                                & Retries with next account
+```mermaid
+flowchart TD
+    A[You run: kiro-pool chat --no-interactive 'Prompt'] --> B[kiro-pool Orchestrator]
+    B --> C[1. Read state & pick next healthy account]
+    B --> D[2. Bench throttled accounts in cooldown window]
+    B --> E[3. Inject isolated XDG & KIRO environment triple]
+    E --> F[Execute official kiro-cli binary]
+    F --> G{Execution Result}
+    G -- Success --> H[Return response to stdout]
+    G -- Throttled 429 / RateLimit --> I[Mark account in 60m cooldown]
+    I --> J[Auto-retry with next available account]
+    J --> F
 ```
 
 *(See [docs/INTERNAL_ARCHITECTURE.md](docs/INTERNAL_ARCHITECTURE.md) for full reverse-engineered details.)*
@@ -55,12 +60,12 @@ Kiro CLI stores authentication tokens in an unencrypted SQLite table at `$XDG_DA
 Clone and run the installer:
 
 ```bash
-git clone https://github.com/shardendu-mishra/kiro-account-pool-manager.git
+git clone https://github.com/MishraShardendu22/kiro-account-pool-manager.git
 cd kiro-account-pool-manager
 ./install.sh
 ```
 
-Ensure `~/.local/bin` is in your `PATH` (default in Ubuntu).
+Ensure `~/.local/bin` is in your `PATH` (default in Ubuntu and most distributions).
 
 ### 2. Enroll Accounts
 
@@ -151,6 +156,18 @@ kiro chat --no-interactive "Review PR #42"
 | `kiro-pool reset-cooldown` | Manually clear cooldown timers for all accounts |
 | `kiro-pool run <args...>` | Run any Kiro CLI command rotated through the pool |
 | `kiro-pool <args...>` | Shorthand for `run` (e.g., `kiro-pool whoami`) |
+| `kiro-pool --version` | Display current version number |
+| `kiro-pool --help` | Show command usage and options |
+
+---
+
+## 🧪 Running Tests
+
+The test suite runs using Python's native `unittest` framework (zero third-party dependencies):
+
+```bash
+python3 -m unittest discover -s tests -v
+```
 
 ---
 
@@ -164,6 +181,12 @@ No. Kiro's cloud runtime anchors conversation threads to the user's Profile ARN.
 
 #### How do tokens refresh?
 Kiro CLI automatically refreshes expired tokens in the background using each profile's independent `.refresh.lock` and SQLite database. No manual re-login is required.
+
+---
+
+## 🤝 Contributing
+
+Contributions are warmly welcomed! Please read our [Contributing Guide](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ---
 
