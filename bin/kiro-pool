@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+import os
+import sys
+import json
+import time
+import fcntl
+import shutil
+import argparse
+import subprocess
+
+BASE_DIR = os.path.expanduser("~/.local/share/kiro-profiles")
+KIRO_HOME_BASE = os.path.expanduser("~/.kiro-profiles")
+STATE_FILE = os.path.join(BASE_DIR, "pool_state.json")
+LOCK_FILE = os.path.join(BASE_DIR, ".pool.lock")
+SYSTEM_DATA_DIR = os.path.expanduser("~/.local/share/kiro-cli")
+KIRO_BIN = shutil.which("kiro-cli") or os.path.expanduser("~/.local/bin/kiro-cli")
+
+COOLDOWN_SECONDS = 3600  # 1 hour cooldown when throttled
+
+def acquire_lock():
+    os.makedirs(BASE_DIR, exist_ok=True)
+    f = open(LOCK_FILE, "w")
+    fcntl.flock(f, fcntl.LOCK_EX)
+    return f
+
+def release_lock(f):
+    fcntl.flock(f, fcntl.LOCK_UN)
+    f.close()
+
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {"current_index": 0, "profiles": {}}
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"current_index": 0, "profiles": {}}
+
+def save_state(state):
+    os.makedirs(BASE_DIR, exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+def get_env_for_profile(name):
+    env = os.environ.copy()
+    data_dir = os.path.join(BASE_DIR, name)
+    home_dir = os.path.join(KIRO_HOME_BASE, name)
+    run_dir = f"/tmp/kiro-run-{name}-{os.getuid()}"
+    os.makedirs(run_dir, exist_ok=True)
+    env["XDG_DATA_HOME"] = data_dir
+    env["KIRO_HOME"] = home_dir
+    env["XDG_RUNTIME_DIR"] = run_dir
+    return env
+
+def link_runtime_binaries(name):
+    target_cli_data = os.path.join(BASE_DIR, name, "kiro-cli")
+    os.makedirs(target_cli_data, exist_ok=True)
+    os.makedirs(os.path.join(KIRO_HOME_BASE, name), exist_ok=True)
+
+    # Symlink large static binaries to keep disk usage to ~50KB per account
+    for item in ["node", "bun", "tui.js", "run", "kas"]:
+        src = os.path.join(SYSTEM_DATA_DIR, item)
+        dst = os.path.join(target_cli_data, item)
+        if os.path.exists(src) and not os.path.exists(dst):
+            try:
+                os.symlink(src, dst)
+            except OSError:
+                pass
+
+def remove_account(name):
+    lock = acquire_lock()
+    try:
+        state = load_state()
+        removed_from_state = False
+        if name in state.get("profiles", {}):
+            del state["profiles"][name]
+            save_state(state)
+            removed_from_state = True
+
+        # Cleanup files and directories
+        p_data = os.path.join(BASE_DIR, name)
+        p_home = os.path.join(KIRO_HOME_BASE, name)
+        p_run = f"/tmp/kiro-run-{name}-{os.getuid()}"
+
+        shutil.rmtree(p_data, ignore_errors=True)
+        shutil.rmtree(p_home, ignore_errors=True)
+        shutil.rmtree(p_run, ignore_errors=True)
+
+        if removed_from_state or os.path.exists(p_data):
+            print(f"\033[1;32m[kiro-pool]\033[0m Profile '{name}' successfully removed.")
+        else:
+            print(f"\033[1;33m[kiro-pool]\033[0m Profile '{name}' cleaned up.")
+    finally:
+        release_lock(lock)
+
+def add_account(name):
+    # If the profile already exists or has an old session, wipe it first to avoid "Already logged in"
+    profile_db = os.path.join(BASE_DIR, name, "kiro-cli", "data.sqlite3")
+    if os.path.exists(profile_db):
+        print(f"\033[1;33m[kiro-pool]\033[0m Detected existing session for '{name}'. Resetting to ensure clean login...")
+        remove_account(name)
+
+    print(f"\033[1;34m[kiro-pool]\033[0m Initializing profile '{name}'...")
+    link_runtime_binaries(name)
+    env = get_env_for_profile(name)
+
+    print(f"\033[1;33m[kiro-pool]\033[0m Initiating OAuth login for '{name}' via device flow.")
+    print("Select 'Use with Google' in the prompt, then open the verification link")
+    print("in an Incognito / Private window or dedicated browser profile for this Google account.\n")
+
+    cmd = [KIRO_BIN, "login", "--use-device-flow"]
+    proc = subprocess.run(cmd, env=env)
+    if proc.returncode != 0:
+        print(f"\033[1;31m[kiro-pool]\033[0m Login failed or was cancelled.")
+        return
+
+    # Query whoami to fetch the authenticated email
+    whoami_proc = subprocess.run([KIRO_BIN, "whoami"], env=env, capture_output=True, text=True)
+    email = "Unknown"
+    for line in whoami_proc.stdout.splitlines():
+        if "Email:" in line:
+            email = line.split("Email:")[1].strip()
+
+    lock = acquire_lock()
+    try:
+        state = load_state()
+        state["profiles"][name] = {
+            "email": email,
+            "created_at": time.time(),
+            "cooldown_until": 0,
+            "usage_count": 0
+        }
+        save_state(state)
+    finally:
+        release_lock(lock)
+
+    print(f"\n\033[1;32m[kiro-pool]\033[0m Profile '{name}' successfully enrolled! (Google: {email})")
+
+def show_status():
+    lock = acquire_lock()
+    try:
+        state = load_state()
+    finally:
+        release_lock(lock)
+
+    profiles = state.get("profiles", {})
+    if not profiles:
+        print("\033[1;33m[kiro-pool]\033[0m No accounts configured. Add one with: kiro-pool add <name>")
+        return
+
+    now = time.time()
+    print("\n\033[1;36mKiro Multi-Account Pool Status\033[0m")
+    print("=" * 72)
+    print(f"{'Profile':<15} {'Google Email':<32} {'Status':<15} {'Used':<6}")
+    print("-" * 72)
+    for name, info in sorted(profiles.items()):
+        cooldown = info.get("cooldown_until", 0)
+        usage = info.get("usage_count", 0)
+        email = info.get("email", "Unknown")
+        if cooldown > now:
+            rem = int((cooldown - now) / 60)
+            status = f"\033[1;31mCooldown ({rem}m)\033[0m"
+        else:
+            status = "\033[1;32mReady\033[0m"
+        print(f"{name:<15} {email:<32} {status:<24} {usage:<6}")
+    print("=" * 72 + "\n")
+
+def get_next_available_profile():
+    lock = acquire_lock()
+    try:
+        state = load_state()
+        profiles = state.get("profiles", {})
+        if not profiles:
+            return None, state
+
+        profile_names = sorted(profiles.keys())
+        total = len(profile_names)
+        now = time.time()
+
+        start_index = state.get("current_index", 0)
+        chosen = None
+
+        # Search for the next profile not in cooldown
+        for i in range(total):
+            idx = (start_index + i) % total
+            candidate = profile_names[idx]
+            if profiles[candidate].get("cooldown_until", 0) <= now:
+                chosen = candidate
+                state["current_index"] = (idx + 1) % total
+                profiles[chosen]["usage_count"] = profiles[chosen].get("usage_count", 0) + 1
+                save_state(state)
+                break
+
+        return chosen, state
+    finally:
+        release_lock(lock)
+
+def mark_throttled(name):
+    lock = acquire_lock()
+    try:
+        state = load_state()
+        if name in state.get("profiles", {}):
+            state["profiles"][name]["cooldown_until"] = time.time() + COOLDOWN_SECONDS
+            save_state(state)
+            print(f"\033[1;31m[kiro-pool]\033[0m '{name}' hit rate limit. Marked in cooldown for {COOLDOWN_SECONDS//60} mins.")
+    finally:
+        release_lock(lock)
+
+def run_command(args):
+    attempts = 0
+    max_attempts = 5
+
+    while attempts < max_attempts:
+        profile_name, state = get_next_available_profile()
+        if not profile_name:
+            print("\033[1;31m[kiro-pool ERROR]\033[0m All pooled accounts are currently throttled or no accounts exist.")
+            sys.exit(1)
+
+        env = get_env_for_profile(profile_name)
+        link_runtime_binaries(profile_name)
+
+        sys.stderr.write(f"\033[1;34m[kiro-pool]\033[0m Routing via \033[1;32m{profile_name}\033[0m ({state['profiles'][profile_name].get('email')})\n")
+        sys.stderr.flush()
+
+        cmd = [KIRO_BIN] + args
+
+        # If interactive TUI without explicit prompt argument, hand over terminal directly
+        is_interactive = not ("--no-interactive" in args or "whoami" in args or "login" in args)
+        if is_interactive and len(args) > 0 and args[0] in ["chat", "dashboard"]:
+            os.execvpe(KIRO_BIN, cmd, env)
+
+        # For non-interactive prompts, monitor output for rate-limiting errors
+        proc = subprocess.Popen(cmd, env=env, stdout=sys.stdout, stderr=subprocess.PIPE, text=True)
+        _, stderr_text = proc.communicate()
+
+        if stderr_text:
+            sys.stderr.write(stderr_text)
+
+        err_lower = stderr_text.lower()
+        is_throttled = any(kw in err_lower for kw in ["thrott", "rate limit", "quota", "429", "allowance exceeded", "too many requests"])
+
+        if proc.returncode != 0 and is_throttled:
+            mark_throttled(profile_name)
+            attempts += 1
+            print(f"\033[1;33m[kiro-pool]\033[0m Retrying prompt with next available account (attempt {attempts+1})...")
+            continue
+
+        sys.exit(proc.returncode)
+
+def main():
+    if len(sys.argv) == 1:
+        show_status()
+        return
+
+    sub = sys.argv[1]
+
+    # Support 'remove', 'rm', 'delete', 'del'
+    if sub in ["remove", "rm", "delete", "del"]:
+        if len(sys.argv) < 3:
+            print("Usage: kiro-pool remove <profile-name> [profile-name-2 ...]")
+            sys.exit(1)
+        for name in sys.argv[2:]:
+            if name.startswith("-"): continue
+            remove_account(name)
+        return
+
+    if sub == "add":
+        if len(sys.argv) < 3:
+            print("Usage: kiro-pool add <profile-name>")
+            sys.exit(1)
+        add_account(sys.argv[2])
+        return
+
+    if sub in ["status", "list", "ls"]:
+        show_status()
+        return
+
+    if sub == "reset-cooldown":
+        lock = acquire_lock()
+        try:
+            state = load_state()
+            for p in state.get("profiles", {}).values():
+                p["cooldown_until"] = 0
+            save_state(state)
+            print("\033[1;32m[kiro-pool]\033[0m Cooldown timers cleared for all accounts.")
+        finally:
+            release_lock(lock)
+        return
+
+    if sub in ["help", "--help", "-h"]:
+        print("""Kiro Multi-Account Pool Manager
+
+Usage:
+  kiro-pool add <name>                  Enroll a new Google account into the pool
+  kiro-pool remove <name> [name2...]    Remove account(s) from the pool (aliases: rm, delete)
+  kiro-pool status                      View health, cooldown status, and usage (aliases: list, ls)
+  kiro-pool reset-cooldown              Clear cooldown timers for all accounts
+  kiro-pool run <args...>               Run a Kiro CLI command rotated through the pool
+  kiro-pool <args...>                   (Default) Shorthand for 'run'
+""")
+        return
+
+    # If explicit 'run' subcommand
+    if sub == "run":
+        run_command(sys.argv[2:])
+        return
+
+    # Default: pass all arguments to Kiro CLI
+    run_command(sys.argv[1:])
+
+if __name__ == "__main__":
+    main()

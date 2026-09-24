@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.sqlite3*
+*.log
+.DS_Store
+.pool.lock
+pool_state.json
