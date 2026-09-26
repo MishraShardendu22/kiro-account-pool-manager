@@ -21,22 +21,26 @@ class TestKiroPool(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp(prefix="kiro-pool-test-")
         self.mock_base_dir = os.path.join(self.temp_dir, "profiles")
         self.mock_kiro_home = os.path.join(self.temp_dir, "kiro-home")
+        self.mock_system_data = os.path.join(self.temp_dir, "system-kiro")
         self.mock_state_file = os.path.join(self.mock_base_dir, "pool_state.json")
         self.mock_lock_file = os.path.join(self.mock_base_dir, ".pool.lock")
 
         # Patch module global paths
         self.orig_base = kiro_pool.BASE_DIR
         self.orig_home = kiro_pool.KIRO_HOME_BASE
+        self.orig_system_data = kiro_pool.SYSTEM_DATA_DIR
         self.orig_state = kiro_pool.STATE_FILE
         self.orig_lock = kiro_pool.LOCK_FILE
 
         kiro_pool.BASE_DIR = self.mock_base_dir
         kiro_pool.KIRO_HOME_BASE = self.mock_kiro_home
+        kiro_pool.SYSTEM_DATA_DIR = self.mock_system_data
         kiro_pool.STATE_FILE = self.mock_state_file
         kiro_pool.LOCK_FILE = self.mock_lock_file
 
         os.makedirs(self.mock_base_dir, exist_ok=True)
         os.makedirs(self.mock_kiro_home, exist_ok=True)
+        os.makedirs(self.mock_system_data, exist_ok=True)
 
     def _create_mock_auth_db(self, name, provider="google"):
         cli_dir = os.path.join(self.mock_base_dir, name, "kiro-cli")
@@ -53,6 +57,7 @@ class TestKiroPool(unittest.TestCase):
     def tearDown(self):
         kiro_pool.BASE_DIR = self.orig_base
         kiro_pool.KIRO_HOME_BASE = self.orig_home
+        kiro_pool.SYSTEM_DATA_DIR = self.orig_system_data
         kiro_pool.STATE_FILE = self.orig_state
         kiro_pool.LOCK_FILE = self.orig_lock
 
@@ -243,16 +248,113 @@ class TestKiroPool(unittest.TestCase):
         self.assertFalse(authed_none)
         self.assertIsNone(prov_none)
 
+    def test_check_db_auth_builder_id(self):
+        cli_dir = os.path.join(self.mock_base_dir, "acc_builder", "kiro-cli")
+        os.makedirs(cli_dir, exist_ok=True)
+        db_path = os.path.join(cli_dir, "data.sqlite3")
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        payload = json.dumps({"accessToken": "mock_builder_token", "refreshToken": "mock_rf"})
+        cur.execute("INSERT INTO auth_kv (key, value) VALUES ('kirocli:builder-id:token', ?)", (payload,))
+        conn.commit()
+        conn.close()
+
+        authed, prov = kiro_pool.check_db_auth(db_path)
+        self.assertTrue(authed)
+        self.assertEqual(prov, "builder-id")
+
+    @patch("subprocess.run")
+    def test_import_current_account(self, mock_run):
+        # Setup mock system db
+        sys_db = os.path.join(self.mock_system_data, "data.sqlite3")
+        conn = sqlite3.connect(sys_db)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        payload = json.dumps({"access_token": "valid_token", "provider": "google"})
+        cur.execute("INSERT INTO auth_kv (key, value) VALUES ('kirocli:social:token', ?)", (payload,))
+        conn.commit()
+        conn.close()
+
+        # Mock whoami proc output
+        mock_proc = unittest.mock.MagicMock()
+        mock_proc.stdout = "Logged in with Google\nEmail: imported@gmail.com\n"
+        mock_run.return_value = mock_proc
+
+        success = kiro_pool.import_current_account("imp_prof")
+        self.assertTrue(success)
+
+        # Verify state
+        state = kiro_pool.load_state()
+        self.assertIn("imp_prof", state["profiles"])
+        self.assertEqual(state["profiles"]["imp_prof"]["email"], "imported@gmail.com")
+        self.assertEqual(state["profiles"]["imp_prof"]["provider"], "google")
+
+        # Verify target file exists
+        target_db = os.path.join(self.mock_base_dir, "imp_prof", "kiro-cli", "data.sqlite3")
+        self.assertTrue(os.path.exists(target_db))
+
+    def test_switch_default_account(self):
+        self._create_mock_auth_db("acc_to_switch", provider="github")
+        state = {
+            "current_index": 0,
+            "profiles": {
+                "acc_to_switch": {"email": "switched@gh.com", "cooldown_until": 0, "usage_count": 0}
+            }
+        }
+        kiro_pool.save_state(state)
+
+        success = kiro_pool.switch_default_account("acc_to_switch")
+        self.assertTrue(success)
+
+        # Verify system db has the credentials
+        sys_db = os.path.join(self.mock_system_data, "data.sqlite3")
+        self.assertTrue(os.path.exists(sys_db))
+        authed, prov = kiro_pool.check_db_auth(sys_db)
+        self.assertTrue(authed)
+        self.assertEqual(prov, "github")
+
+    def test_preferred_provider_selection(self):
+        self._create_mock_auth_db("g_acc1", provider="google")
+        self._create_mock_auth_db("g_acc2", provider="google")
+        self._create_mock_auth_db("gh_acc1", provider="github")
+
+        state = {
+            "current_index": 0,
+            "profiles": {
+                "g_acc1": {"email": "g1@gmail.com", "cooldown_until": 0, "usage_count": 0},
+                "g_acc2": {"email": "g2@gmail.com", "cooldown_until": 0, "usage_count": 0},
+                "gh_acc1": {"email": "gh1@github.com", "cooldown_until": 0, "usage_count": 0},
+            }
+        }
+        kiro_pool.save_state(state)
+
+        # When requesting google, should return g_acc1
+        chosen, _ = kiro_pool.get_next_available_profile(preferred_provider="google")
+        self.assertEqual(chosen, "g_acc1")
+
+        # Mark g_acc1 and g_acc2 in cooldown
+        now = time.time()
+        state["profiles"]["g_acc1"]["cooldown_until"] = now + 3600
+        state["profiles"]["g_acc2"]["cooldown_until"] = now + 3600
+        kiro_pool.save_state(state)
+
+        # When requesting google but all google accounts are in cooldown, should fall back to github
+        chosen_fb, _ = kiro_pool.get_next_available_profile(preferred_provider="google")
+        self.assertEqual(chosen_fb, "gh_acc1")
+
     def test_cli_version_and_help(self):
         import subprocess
         res_ver = subprocess.run([SCRIPT_PATH, "--version"], capture_output=True, text=True)
         self.assertEqual(res_ver.returncode, 0)
-        self.assertIn("kiro-pool 1.0.0", res_ver.stdout)
+        self.assertIn("kiro-pool 1.1.0", res_ver.stdout)
 
         res_help = subprocess.run([SCRIPT_PATH, "--help"], capture_output=True, text=True)
         self.assertEqual(res_help.returncode, 0)
         self.assertIn("Usage:", res_help.stdout)
         self.assertIn("kiro-pool add", res_help.stdout)
+        self.assertIn("kiro-pool import", res_help.stdout)
+        self.assertIn("kiro-pool switch", res_help.stdout)
         self.assertIn("kiro-pool prune", res_help.stdout)
 
 

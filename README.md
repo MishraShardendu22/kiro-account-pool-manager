@@ -69,19 +69,26 @@ Ensure `~/.local/bin` is in your `PATH` (default in Ubuntu and most distribution
 
 ### 2. Enroll Accounts
 
-Enroll as many Google accounts as you want:
+You can enroll accounts in two ways:
 
+#### Option A: One-Click Import (Recommended)
+Log in normally via standard `kiro-cli login` in your browser, then import it into a permanent pool slot:
+```bash
+kiro-cli login
+kiro-pool import acc1
+```
+Repeat for any other Google or GitHub account—each imported session is permanently isolated and protected from being overwritten.
+
+#### Option B: Direct Enrollment
 ```bash
 kiro-pool add acc1
 kiro-pool add acc2
-kiro-pool add acc3
 ```
 
-> [!IMPORTANT]
-> **Avoid Google Cookie Collision:**
-> When adding Account 2 or higher:
-> 1. In the terminal prompt, select **Use with Google**.
-> 2. Copy the authorization URL and open it in an **Incognito / Private window** (or separate browser profile) signed into that specific Google account.
+> [!TIP]
+> **Why Stock Kiro Was Limited to 2 Accounts:**
+> In default unmanaged `kiro-cli`, session credentials are stored in a single SQLite table (`auth_kv`) with only one key for social login (`kirocli:social:token`) and one for AWS Builder ID (`kirocli:builder-id:token`). Logging into a second Google account in stock Kiro simply overwrote the file on disk!
+> **With `kiro-pool`'s isolated sandboxes, you can run an unlimited number of accounts simultaneously.** Server-side tokens do **not** expire or invalidate each other.
 
 ### 3. Check Pool Status & Prune Unhealthy Accounts
 
@@ -91,6 +98,9 @@ kiro-pool status
 
 # Clean up / remove any accounts that lost authentication or were logged out
 kiro-pool prune
+
+# Set any pooled profile as your active default for standard 'kiro-cli'
+kiro-pool switch acc1
 ```
 
 **Example Output:**
@@ -99,8 +109,8 @@ Kiro Multi-Account Pool Status
 ============================================================================
 Profile        Email                            Auth State           Used  
 ----------------------------------------------------------------------------
-acc1           work.dev@gmail.com               Ready (Google)     16    
-acc2           personal.code@gmail.com          Ready (Google)     14    
+01             work.dev@gmail.com               Ready (Google)     16    
+upsc           personal.code@gmail.com          Ready (Github)     14    
 acc3           experimental@gmail.com           Cooldown (45m)     8     
 acc4           old.dev@gmail.com                Login Required     2     
 ============================================================================
@@ -113,8 +123,9 @@ Tip: 1 account(s) require re-login. Run kiro-pool prune to remove them from rota
 
 `kiro-pool` is designed for autonomous agents, CI/CD runners, and background subtasks:
 1. **Pre-flight Auth Filtering**: Before any prompt is executed, `kiro-pool` inspects the profile's SQLite session. If an account is logged out or unauthenticated, it is **automatically skipped**—it will never block your terminal.
-2. **Headless Safety Guard**: If an account's token is revoked mid-flight and `kiro-cli` attempts to launch an interactive browser callback (`localhost:3128`), `kiro-pool` catches it immediately, skips the expired profile, and transparently retries on the next healthy account.
-3. **Automated Playwright Login**: For headless server environments, `scripts/auto_auth_playwright.py` is included to automate device flow logins via Chromium.
+2. **Same-Provider Auto-Failover**: When an account hits quota limits or HTTP 429 throttling, `kiro-pool` marks it in a 60-minute cooldown and **immediately retries on another healthy account from the SAME provider** before falling back to other providers.
+3. **Headless Safety Guard**: If an account's token is revoked mid-flight and `kiro-cli` attempts to launch an interactive browser callback (`localhost:3128`), `kiro-pool` catches it immediately, skips the expired profile, and transparently retries on the next healthy account.
+4. **Automated Playwright Login**: For headless server environments, `scripts/auto_auth_playwright.py` is included to automate device flow logins via Chromium.
 
 ---
 
@@ -125,17 +136,17 @@ Tip: 1 account(s) require re-login. Run kiro-pool prune to remove them from rota
 Every prompt automatically alternates across your account pool:
 
 ```bash
-# Prompt 1 -> Uses acc1
+# Prompt 1 -> Uses acc1 (Google)
 kiro-pool chat --v3 --model claude-haiku-4.5 --no-interactive "Scaffold a FastAPI application"
 
-# Prompt 2 -> Uses acc2
+# Prompt 2 -> Uses acc2 (Google)
 kiro-pool chat --v3 --model claude-haiku-4.5 --no-interactive "Write pytest integration tests"
 
-# Prompt 3 -> Uses acc1 (or acc3)
-kiro-pool chat --v3 --model claude-haiku-4.5 --no-interactive "Generate Dockerfile and compose file"
+# Prompt 3 -> Explicitly target a specific provider if desired
+kiro-pool --provider google chat --v3 --no-interactive "Generate Dockerfile"
 ```
 
-If an account hits a rate limit or requires authentication, `kiro-pool` automatically benches that account and reroutes the prompt to a backup account without failing.
+If an account hits a rate limit or requires authentication, `kiro-pool` automatically benches that account and reroutes the prompt to a backup account of the same provider without failing.
 
 ### B. Interactive Chat Session (TUI)
 
@@ -156,6 +167,7 @@ alias kiro="kiro-pool"
 Now you can run:
 ```bash
 kiro status
+kiro switch 01
 kiro chat --no-interactive "Review PR #42"
 ```
 
@@ -166,11 +178,13 @@ kiro chat --no-interactive "Review PR #42"
 | Command | Description |
 | :--- | :--- |
 | `kiro-pool add <name>` | Enroll a new Google/GitHub account into the pool |
+| `kiro-pool import <name>` | Import active system login (`~/.local/share/kiro-cli`) into a permanent profile |
+| `kiro-pool switch <name>` | Set a pooled profile as the default for standard `kiro-cli` commands |
 | `kiro-pool remove <name> [name2...]` | Remove account(s) from the pool (aliases: `rm`, `delete`, `del`) |
 | `kiro-pool prune` | Remove unauthenticated or expired accounts from the pool (alias: `clean-unauthed`) |
 | `kiro-pool status` | View account health, auth state, cooldowns, and usage (aliases: `list`, `ls`) |
 | `kiro-pool reset-cooldown` | Manually clear cooldown timers for all accounts |
-| `kiro-pool run <args...>` | Run any Kiro CLI command rotated through healthy accounts |
+| `kiro-pool run [--provider P] <args..>` | Run any Kiro CLI command rotated through healthy accounts |
 | `kiro-pool <args...>` | Shorthand for `run` (e.g., `kiro-pool whoami`) |
 | `kiro-pool --version` | Display current version number |
 | `kiro-pool --help` | Show command usage and options |
@@ -210,14 +224,22 @@ python3 -m unittest discover -s tests -v
 
 ## Frequently Asked Questions
 
+#### Why did default Kiro CLI feel limited to at most 2 accounts?
+In unmanaged `kiro-cli`, authentication tokens are stored in a single SQLite table (`auth_kv`) that has only two fixed keys: `kirocli:social:token` (Social Login: Google OR GitHub) and `kirocli:builder-id:token` (AWS Builder ID). When you logged into a second Google account in vanilla `kiro-cli`, it immediately overwrote `kirocli:social:token` in SQLite, wiping out the first Google account.
+With `kiro-pool`, every profile has its own sandboxed SQLite database (`~/.local/share/kiro-profiles/<name>/kiro-cli/data.sqlite3`), completely removing this constraint.
+
+#### Does adding or using another account expire or invalidate my previous account?
+**No.** AWS CodeWhisperer/Kiro generates independent OAuth refresh tokens and AWS profile ARNs tied to the specific account identity. The backend has no link between separate Google accounts; each has its own independent refresh cycle and lifetime. They remain active concurrently.
+
 #### Does this modify my default `kiro-cli`?
-No. Standard `kiro-cli` continues to use your primary default account and configuration. `kiro-pool` operates strictly in isolated profile directories (`~/.local/share/kiro-profiles/`).
+No. Standard `kiro-cli` continues to use your primary default account (`~/.local/share/kiro-cli/data.sqlite3`). However, if you want standard `kiro-cli` to switch to any account in the pool, you can conveniently run `kiro-pool switch <name>`.
 
 #### Can one open chat window switch accounts mid-conversation?
 No. Kiro's cloud runtime anchors conversation threads to the user's Profile ARN. Alternating accounts per message within a single unbroken conversation thread causes backend rejection (`InvalidConversationId`). Rotation happens **per prompt** or **per session**.
 
 #### How do tokens refresh?
 Kiro CLI automatically refreshes expired tokens in the background using each profile's independent `.refresh.lock` and SQLite database. No manual re-login is required.
+
 
 ---
 
