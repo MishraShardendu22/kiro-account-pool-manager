@@ -177,6 +177,27 @@ kiro chat --no-interactive "Review PR #42"
 
 ---
 
+## Practical Tradeoffs & Honest Evaluation
+
+| Dimension | Real-World Assessment |
+| :--- | :--- |
+| **Best For** | Background code generation, PR review delegation, test scaffolding, bulk script generation. |
+| **Not Suited For** | Real-time interactive keystroke completions (due to 5–8s daemon cold-start latency). |
+| **Strengths** | Free frontier model compute (Claude 3.5 Sonnet / Haiku 4.5, Qwen Coder), multiplied quotas, zero card required. |
+| **Limitations** | Session token expiration, device OAuth management overhead, background daemon spin-up time. |
+
+### Where `kiro-pool` Genuinely Shines
+1. **Free Frontier Model Compute**: Access AWS-backed models (Claude 3.5 Sonnet, Claude Haiku 4.5, Qwen Coder) using standard Google and GitHub accounts without paying for OpenAI or Anthropic API subscriptions.
+2. **Quota Multiplication**: By pooling 3–10 accounts, you multiply daily usage allowances and avoid single-account rate limit blocks.
+3. **Disposable Background Sub-agents**: Perfect for offloading heavy, secondary tasks (e.g., analyzing large git diffs during PR reviews or generating boilerplate unit test suites) without consuming your primary AI coding assistant's context window or paid token budget.
+
+### Practical Friction Points to Know
+1. **Daemon Cold-Start Latency**: The official `kiro-cli` engine spawns background runtimes (`kas`, `node`, `bun`) and runs local SQLite synchronization. This introduces an intrinsic **5–8 second startup latency** before output streams. It is best suited for batch prompts and background delegation rather than instant sub-second queries.
+2. **Session Maintenance Overhead**: Google and GitHub OAuth device tokens periodically expire. While `kiro-pool` protects headless automation by auto-skipping expired profiles (and provides `kiro-pool prune`), maintaining a large pool of 10+ accounts requires occasional re-enrollment (which can be automated using `scripts/auto_auth_playwright.py`).
+3. **Execution Model**: `kiro-pool` acts as a prompt runner and tool execution pipeline. It is not an autonomous IDE agent with native workspace tree indexing.
+
+---
+
 ## Running Tests
 
 The test suite runs using Python's native `unittest` framework (zero third-party dependencies):
