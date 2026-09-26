@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import shutil
+import sqlite3
 import tempfile
 import unittest
 import importlib.util
@@ -36,6 +37,18 @@ class TestKiroPool(unittest.TestCase):
 
         os.makedirs(self.mock_base_dir, exist_ok=True)
         os.makedirs(self.mock_kiro_home, exist_ok=True)
+
+    def _create_mock_auth_db(self, name, provider="google"):
+        cli_dir = os.path.join(self.mock_base_dir, name, "kiro-cli")
+        os.makedirs(cli_dir, exist_ok=True)
+        db_path = os.path.join(cli_dir, "data.sqlite3")
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        payload = json.dumps({"access_token": "mock_token", "provider": provider})
+        cur.execute("INSERT INTO auth_kv (key, value) VALUES ('kirocli:social:token', ?)", (payload,))
+        conn.commit()
+        conn.close()
 
     def tearDown(self):
         kiro_pool.BASE_DIR = self.orig_base
@@ -75,6 +88,9 @@ class TestKiroPool(unittest.TestCase):
         self.assertIn("kiro-run-test_profile-", env["XDG_RUNTIME_DIR"])
 
     def test_round_robin_selection(self):
+        self._create_mock_auth_db("acc1")
+        self._create_mock_auth_db("acc2")
+        self._create_mock_auth_db("acc3")
         state = {
             "current_index": 0,
             "profiles": {
@@ -94,6 +110,8 @@ class TestKiroPool(unittest.TestCase):
         self.assertEqual(s4["profiles"]["acc1"]["usage_count"], 2)
 
     def test_cooldown_skips_throttled_profile(self):
+        self._create_mock_auth_db("acc1")
+        self._create_mock_auth_db("acc2")
         now = time.time()
         state = {
             "current_index": 0,
@@ -175,6 +193,56 @@ class TestKiroPool(unittest.TestCase):
         cleared = kiro_pool.load_state()
         self.assertEqual(cleared["profiles"]["acc1"]["cooldown_until"], 0)
 
+    def test_unauthenticated_profile_skipped(self):
+        # acc1 is authed, acc2 is unauthenticated
+        self._create_mock_auth_db("acc1")
+        state = {
+            "current_index": 0,
+            "profiles": {
+                "acc1": {"email": "1@g.com", "cooldown_until": 0, "usage_count": 0},
+                "acc2": {"email": "2@g.com", "cooldown_until": 0, "usage_count": 0},
+            }
+        }
+        kiro_pool.save_state(state)
+
+        # Both attempts should return acc1 because acc2 has no SQLite token
+        p1, _ = kiro_pool.get_next_available_profile()
+        p2, _ = kiro_pool.get_next_available_profile()
+        self.assertEqual(p1, "acc1")
+        self.assertEqual(p2, "acc1")
+
+    def test_prune_unauthenticated(self):
+        self._create_mock_auth_db("acc_valid")
+        state = {
+            "current_index": 0,
+            "profiles": {
+                "acc_valid": {"email": "valid@g.com", "cooldown_until": 0, "usage_count": 0},
+                "acc_unauthed": {"email": "unauthed@g.com", "cooldown_until": 0, "usage_count": 0},
+            }
+        }
+        kiro_pool.save_state(state)
+
+        unauthed_dir = os.path.join(self.mock_base_dir, "acc_unauthed")
+        os.makedirs(unauthed_dir, exist_ok=True)
+
+        kiro_pool.prune_unauthenticated()
+
+        reloaded = kiro_pool.load_state()
+        self.assertIn("acc_valid", reloaded["profiles"])
+        self.assertNotIn("acc_unauthed", reloaded["profiles"])
+        self.assertFalse(os.path.exists(unauthed_dir))
+
+    def test_get_profile_auth_details(self):
+        self._create_mock_auth_db("acc_google", provider="google")
+        authed, prov = kiro_pool.get_profile_auth_details("acc_google")
+        self.assertTrue(authed)
+        self.assertEqual(prov, "google")
+
+        # Non-existent profile
+        authed_none, prov_none = kiro_pool.get_profile_auth_details("non_existent")
+        self.assertFalse(authed_none)
+        self.assertIsNone(prov_none)
+
     def test_cli_version_and_help(self):
         import subprocess
         res_ver = subprocess.run([SCRIPT_PATH, "--version"], capture_output=True, text=True)
@@ -185,7 +253,9 @@ class TestKiroPool(unittest.TestCase):
         self.assertEqual(res_help.returncode, 0)
         self.assertIn("Usage:", res_help.stdout)
         self.assertIn("kiro-pool add", res_help.stdout)
+        self.assertIn("kiro-pool prune", res_help.stdout)
 
 
 if __name__ == "__main__":
     unittest.main()
+

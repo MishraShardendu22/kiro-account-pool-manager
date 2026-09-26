@@ -83,23 +83,38 @@ kiro-pool add acc3
 > 1. In the terminal prompt, select **Use with Google**.
 > 2. Copy the authorization URL and open it in an **Incognito / Private window** (or separate browser profile) signed into that specific Google account.
 
-### 3. Check Pool Status
+### 3. Check Pool Status & Prune Unhealthy Accounts
 
 ```bash
+# View active accounts, OAuth provider, and health
 kiro-pool status
+
+# Clean up / remove any accounts that lost authentication or were logged out
+kiro-pool prune
 ```
 
 **Example Output:**
 ```text
 Kiro Multi-Account Pool Status
-========================================================================
-Profile         Google Email                     Status          Used  
-------------------------------------------------------------------------
-acc1            work.dev@gmail.com               Ready           12    
-acc2            personal.code@gmail.com          Ready           11    
-acc3            experimental@gmail.com           Cooldown (45m)  8     
-========================================================================
+============================================================================
+Profile        Email                            Auth State           Used  
+----------------------------------------------------------------------------
+acc1           work.dev@gmail.com               Ready (Google)     16    
+acc2           personal.code@gmail.com          Ready (Google)     14    
+acc3           experimental@gmail.com           Cooldown (45m)     8     
+acc4           old.dev@gmail.com                Login Required     2     
+============================================================================
+Tip: 1 account(s) require re-login. Run kiro-pool prune to remove them from rotation.
 ```
+
+---
+
+## Unattended & Headless Safety
+
+`kiro-pool` is designed for autonomous agents, CI/CD runners, and background subtasks:
+1. **Pre-flight Auth Filtering**: Before any prompt is executed, `kiro-pool` inspects the profile's SQLite session. If an account is logged out or unauthenticated, it is **automatically skipped**—it will never block your terminal.
+2. **Headless Safety Guard**: If an account's token is revoked mid-flight and `kiro-cli` attempts to launch an interactive browser callback (`localhost:3128`), `kiro-pool` catches it immediately, skips the expired profile, and transparently retries on the next healthy account.
+3. **Automated Playwright Login**: For headless server environments, `scripts/auto_auth_playwright.py` is included to automate device flow logins via Chromium.
 
 ---
 
@@ -111,16 +126,16 @@ Every prompt automatically alternates across your account pool:
 
 ```bash
 # Prompt 1 -> Uses acc1
-kiro-pool chat --no-interactive "Scaffold a FastAPI application"
+kiro-pool chat --v3 --model claude-haiku-4.5 --no-interactive "Scaffold a FastAPI application"
 
 # Prompt 2 -> Uses acc2
-kiro-pool chat --no-interactive "Write pytest integration tests"
+kiro-pool chat --v3 --model claude-haiku-4.5 --no-interactive "Write pytest integration tests"
 
 # Prompt 3 -> Uses acc1 (or acc3)
-kiro-pool chat --no-interactive "Generate Dockerfile and compose file"
+kiro-pool chat --v3 --model claude-haiku-4.5 --no-interactive "Generate Dockerfile and compose file"
 ```
 
-If an account hits a rate limit, `kiro-pool` automatically marks that account as throttled and reroutes the prompt to a backup account without failing.
+If an account hits a rate limit or requires authentication, `kiro-pool` automatically benches that account and reroutes the prompt to a backup account without failing.
 
 ### B. Interactive Chat Session (TUI)
 
@@ -150,11 +165,12 @@ kiro chat --no-interactive "Review PR #42"
 
 | Command | Description |
 | :--- | :--- |
-| `kiro-pool add <name>` | Enroll a new Google account into the pool |
+| `kiro-pool add <name>` | Enroll a new Google/GitHub account into the pool |
 | `kiro-pool remove <name> [name2...]` | Remove account(s) from the pool (aliases: `rm`, `delete`, `del`) |
-| `kiro-pool status` | View account health, cooldowns, and usage (aliases: `list`, `ls`) |
+| `kiro-pool prune` | Remove unauthenticated or expired accounts from the pool (alias: `clean-unauthed`) |
+| `kiro-pool status` | View account health, auth state, cooldowns, and usage (aliases: `list`, `ls`) |
 | `kiro-pool reset-cooldown` | Manually clear cooldown timers for all accounts |
-| `kiro-pool run <args...>` | Run any Kiro CLI command rotated through the pool |
+| `kiro-pool run <args...>` | Run any Kiro CLI command rotated through healthy accounts |
 | `kiro-pool <args...>` | Shorthand for `run` (e.g., `kiro-pool whoami`) |
 | `kiro-pool --version` | Display current version number |
 | `kiro-pool --help` | Show command usage and options |
